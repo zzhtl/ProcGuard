@@ -143,7 +143,7 @@ ProcGuard 自身同样不可操作（分类不变）。
 
 | 来源 | 方式 |
 |---|---|
-| systemd 服务（`.service`，`app-*`、`run-*` 除外） | `systemctl [--user] restart <unit>`，系统服务通过提权执行。执行前用 `systemctl show` 查询：目标不是 `MainPID`（或 systemd 未记录主进程）时提示将重启整个服务；`KillMode=process` 时提示服务内其他进程会保留；`Transient=yes` 的临时单元无法 restart，本用户进程改为按原命令行重放 |
+| systemd 服务（`.service`，`app-*`、`run-*` 除外） | `systemctl [--user] restart <unit>`，系统服务通过提权执行，用户服务仅限本用户的。执行前用 `systemctl show` 查询：目标不是 `MainPID`（或 systemd 未记录主进程）时提示将重启整个服务；`KillMode=process` 时提示服务内其他进程会保留；`Transient=yes` 的临时单元无法 restart，本用户进程改为按原命令行重放 |
 | D-Bus 按需激活的辅助进程 | 不提供重启，也不会为此重启总线 |
 | Docker 容器（systemd cgroup 驱动下的 `docker-<id>.scope`） | `docker restart <id>`，整个容器重启。直接调用 `docker` 而不提权，需要当前用户能访问 Docker daemon |
 | Kubernetes 容器（kubepods） | 向容器 init（该 cgroup 中最早启动的进程）发 SIGTERM，等待 kubelet 在同一 pod 内重建，最多 30 秒；`restartPolicy: Never` 时不会重建。目标是 pause 容器时提示将重建整个 pod |
@@ -151,7 +151,9 @@ ProcGuard 自身同样不可操作（分类不变）。
 | snap 应用（`snap.<snap>.<app>-<uuid>.scope`） | SIGTERM 并等其退出，再 `snap run <snap>.<app>` |
 | Flatpak 应用（`app-flatpak-<id>-<n>.scope`） | SIGTERM 并等其退出，再 `flatpak run <id>` |
 | 本用户的其他进程 | 按原命令行、工作目录和环境变量重放 |
-| 其他用户的非服务进程 | 不提供重启，只能结束 |
+| 其他用户的进程（系统服务和容器除外） | 不提供重启，只能结束 |
+
+用户服务、snap / Flatpak 和按原命令行重放都以 ProcGuard 自身的身份执行（`systemctl --user` 只连得到调用者自己的用户管理器），所以只对本用户的进程开放。以 root 运行时也一样：不会把其他用户的程序以 root 身份拉起，也不会误重启 root 用户管理器里的同名服务。
 
 按原命令行重放的规则：
 

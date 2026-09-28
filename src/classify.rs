@@ -455,10 +455,20 @@ pub fn restart_kind(f: &Facts, class: &Class, env: &Env) -> Restart {
         if BUS_UNITS.contains(&unit) {
             return Restart::Unavailable("D-Bus 按需激活的辅助进程：结束后由总线按需重新拉起");
         }
+        let user = in_user_manager(f.cgroup);
+        // `systemctl --user` reaches only the caller's own manager (root's, when running as root)
+        // and would restart a namesake unit there. user@<uid>.service sits in user-<uid>.slice.
+        if user && user_slice_uid(f.cgroup) != Some(env.my_uid) {
+            return Restart::Unavailable("非本用户的用户服务：只能结束");
+        }
         return Restart::Unit {
             unit: unit.into(),
-            user: in_user_manager(f.cgroup),
+            user,
         };
+    }
+    // The ways below start the new process as ProcGuard's own user.
+    if f.uid != env.my_uid {
+        return Restart::Unavailable("非本用户的非服务进程：只能结束");
     }
     if let Some(app) = snap_app(unit) {
         return Restart::Snap { app: app.into() };
@@ -470,9 +480,6 @@ pub fn restart_kind(f: &Facts, class: &Class, env: &Env) -> Restart {
         .map(|(app, _)| app)
     {
         return Restart::Flatpak { app: app.into() };
-    }
-    if f.uid != env.my_uid {
-        return Restart::Unavailable("非本用户的非服务进程：只能结束");
     }
     Restart::Relaunch
 }
@@ -946,6 +953,68 @@ mod tests {
             )),
             Restart::Flatpak {
                 app: "org.gnome.Calculator".into()
+            }
+        );
+    }
+
+    /// A restart launches as ProcGuard's own user and `systemctl --user` reaches only the caller's
+    /// manager, so neither may serve another user's process, not even when running as root.
+    #[test]
+    fn restart_never_acts_for_another_user() {
+        let sessions = host_sessions();
+        let root = Env::new(4242, 0, 1000, &sessions);
+        let desktop_user = Env::new(4242, 1000, 1000, &sessions);
+        let plan = |f: &Facts, env: &Env| restart_kind(f, &classify(f, env), env);
+        let umgr = format!("{U}/user@1000.service");
+        let pipewire = format!("{umgr}/session.slice/pipewire.service");
+        let firefox = format!(
+            "{umgr}/app.slice/snap.firefox.firefox-0bb6bd33-6a5f-4a7f-9b2e-4d1e9d2cd0a1.scope"
+        );
+        let calculator = format!("{umgr}/app.slice/app-flatpak-org.gnome.Calculator-4242.scope");
+        let greeter_pipewire =
+            "/user.slice/user-120.slice/user@120.service/session.slice/pipewire.service";
+
+        for (f, env) in [
+            (facts(3584, "pipewire", 1000, &pipewire), &root),
+            (facts(5005, "firefox", 1000, &firefox), &root),
+            (facts(5006, "app", 1000, &calculator), &root),
+            // The gdm greeter's services, seen from the desktop user's session.
+            (
+                facts(238488, "pipewire", 120, greeter_pipewire),
+                &desktop_user,
+            ),
+        ] {
+            assert!(
+                matches!(plan(&f, env), Restart::Unavailable(_)),
+                "{} (pid {}) as uid {}: {:?}",
+                f.comm,
+                f.pid,
+                env.my_uid,
+                plan(&f, env)
+            );
+        }
+
+        // Root still restarts system services and the units of its own manager.
+        assert_eq!(
+            plan(&facts(2000, "cron", 0, "/system.slice/cron.service"), &root),
+            Restart::Unit {
+                unit: "cron.service".into(),
+                user: false
+            }
+        );
+        assert_eq!(
+            plan(
+                &facts(
+                    7000,
+                    "pipewire",
+                    0,
+                    "/user.slice/user-0.slice/user@0.service/session.slice/pipewire.service"
+                ),
+                &root
+            ),
+            Restart::Unit {
+                unit: "pipewire.service".into(),
+                user: true
             }
         );
     }

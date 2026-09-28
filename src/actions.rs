@@ -269,7 +269,7 @@ pub fn prepare(row: &Row, kind: Kind) -> Prepared {
         }
         Kind::Restart => {
             let restart = classify::restart_kind(&facts, &class, &env);
-            plan_restart(&mut p, &live, restart, stopped, privileged)
+            plan_restart(&mut p, &live, restart, stopped)
         }
     };
     p
@@ -280,7 +280,6 @@ fn plan_restart(
     live: &Live,
     restart: Restart,
     stopped: bool,
-    privileged: bool,
 ) -> Result<Plan, String> {
     let key = p.key;
     match restart {
@@ -371,9 +370,6 @@ fn plan_restart(
                 pod_slice,
                 privileged: init_privileged,
             })
-        }
-        Restart::Snap { .. } | Restart::Flatpak { .. } if privileged => {
-            Err("非本用户的沙箱应用：只能结束".to_owned())
         }
         Restart::Snap { app } => {
             p.steps
